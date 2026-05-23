@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+.venv/
+venv/
+.env
+.DS_Store
+.claude/
+# Azure Functions local
+local.settings.json
+.python_packages/
+bin/
+obj/
+*.bicep.json

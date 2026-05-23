@@ -1,0 +1,4 @@
+# Azure Functions deployment dependencies (what the Functions host installs).
+azure-functions
+httpx>=0.27
+pydantic>=2.7

@@ -1,0 +1,61 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "azure-openai-governance-bridge"
+version = "0.1.0"
+description = "Azure Function that gates Azure OpenAI calls through deny-trumps-allow PolicyBundles derived from AI Procurement Decision Cards, emitting tool_invocation_* events to audit-stream-py. The Azure-native sibling of mcp-permission-broker."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+authors = [{ name = "Miz Causevic", email = "miz@kineticgain.com" }]
+keywords = [
+    "azure", "azure-functions", "azure-openai", "ai-governance",
+    "permission-broker", "kinetic-gain-protocol-suite", "decision-intelligence",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Web Environment",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+    "Typing :: Typed",
+]
+dependencies = [
+    "azure-functions>=1.21",
+    "httpx>=0.27",
+    "pydantic>=2.7",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.2",
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "httpx>=0.27",
+]
+
+[project.urls]
+Homepage = "https://kineticgain.com/"
+Repository = "https://github.com/mizcausevic-dev/azure-openai-governance-bridge"
+"Sibling (MCP)" = "https://github.com/mizcausevic-dev/mcp-permission-broker"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/azure_openai_governance_bridge"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "W"]
+
+[tool.mypy]
+strict = true
+ignore_missing_imports = true

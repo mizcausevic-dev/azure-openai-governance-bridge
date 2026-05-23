@@ -1,0 +1,45 @@
+[
+  {
+    "bundle_id": "springfield-isd-aoai-2026",
+    "decision_card_url": "https://district.example/.well-known/decisions/SPRINGFIELD-DEC-2026-001.json",
+    "rules": [
+      {
+        "id": "deny-destructive-tools-in-prod",
+        "priority": 100,
+        "effect": "deny",
+        "tool_name": "^tool\\..*(delete|drop|purge|wipe).*",
+        "caller_id": ".*",
+        "when": { "expr": "context.get('environment') == 'production'" },
+        "because": {
+          "decision_card": "https://district.example/.well-known/decisions/SPRINGFIELD-DEC-2026-001.json",
+          "condition_id": "no-destructive-prod-actions"
+        }
+      },
+      {
+        "id": "deny-frontier-deployment-for-students",
+        "priority": 90,
+        "effect": "deny",
+        "tool_name": "^azure-openai\\.(gpt-4o|o1)$",
+        "caller_id": "^student-.*",
+        "because": {
+          "decision_card": "https://district.example/.well-known/decisions/SPRINGFIELD-DEC-2026-001.json",
+          "condition_id": "students-restricted-to-approved-models"
+        }
+      },
+      {
+        "id": "require-approval-pii-tools",
+        "priority": 80,
+        "effect": "require_approval",
+        "tool_name": "^tool\\.(lookup_student|export_records)$",
+        "caller_id": ".*"
+      },
+      {
+        "id": "allow-approved-deployments",
+        "priority": 10,
+        "effect": "allow",
+        "tool_name": "^azure-openai\\.(gpt-4o-mini|gpt-35-turbo)$",
+        "caller_id": ".*"
+      }
+    ]
+  }
+]

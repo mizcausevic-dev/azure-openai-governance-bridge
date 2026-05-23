@@ -1,0 +1,13 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "python",
+    "AZURE_OPENAI_ENDPOINT": "https://your-aoai.openai.azure.com",
+    "AZURE_OPENAI_API_KEY": "<your-key>",
+    "AZURE_OPENAI_API_VERSION": "2024-10-21",
+    "AUDIT_STREAM_URL": "http://localhost:8093/events",
+    "DEFAULT_OUTCOME": "deny",
+    "POLICY_BUNDLES_JSON": "[]"
+  }
+}
