@@ -15,7 +15,7 @@ The bridge derives the `policy-as-code-engine` `policies[]` bundle from the sign
 - **deny** → `403` with the matched rule and any configured Decision Card URL; nothing is forwarded
 - **require_approval** → `409`; no approval-token verification exists yet, so an operator must update policy through a separate trusted process before the call can proceed
 
-The bridge attempts one authenticated `tool_invocation_*` POST to [`audit-stream-py`](https://github.com/mizcausevic-dev/audit-stream-py) for the governing decision when both audit URL and token are configured. The sink URL must use HTTPS or loopback HTTP, without embedded credentials, query, or fragment. Audit is optional and best-effort: missing or failed delivery does not block forwarding. This is not durable, per-tool, tamper-evident audit evidence.
+The bridge attempts one authenticated `tool_invocation_*` POST to [`audit-stream-py`](https://github.com/mizcausevic-dev/audit-stream-py) for the governing decision when both audit URL and token are configured. The sink URL must use HTTPS or numeric loopback HTTP (`127.0.0.1` or `::1`), without embedded credentials, query, or fragment; redirects are not followed. Audit is optional and best-effort: missing or failed delivery does not block forwarding. This is not durable, per-tool, tamper-evident audit evidence.
 
 **Release status:** this repository is a local integration prototype. Do not put it on a production data path until the identity, bundle provenance, audit, network, secrets, deployment, and rollback gates below are closed.
 

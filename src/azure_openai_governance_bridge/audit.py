@@ -38,7 +38,7 @@ def _audit_events_url(raw_url: str) -> str:
         or url.userinfo
         or url.query
         or url.fragment
-        or (url.scheme == "http" and url.host not in {"localhost", "127.0.0.1", "::1"})
+        or (url.scheme == "http" and url.host not in {"127.0.0.1", "::1"})
     ):
         raise ValueError("audit stream URL must be HTTPS or loopback HTTP without credentials")
     path = url.path.rstrip("/")
@@ -88,10 +88,22 @@ def emit_audit_event(
 
     try:
         if client is not None:
-            response = client.post(url, json=event, headers={"authorization": f"Bearer {token}"}, timeout=2.0)
+            response = client.post(
+                url,
+                json=event,
+                headers={"authorization": f"Bearer {token}"},
+                timeout=2.0,
+                follow_redirects=False,
+            )
         else:
-            response = httpx.post(url, json=event, headers={"authorization": f"Bearer {token}"}, timeout=2.0)
-        if response.status_code >= 400:
+            response = httpx.post(
+                url,
+                json=event,
+                headers={"authorization": f"Bearer {token}"},
+                timeout=2.0,
+                follow_redirects=False,
+            )
+        if not 200 <= response.status_code < 300:
             logger.warning("audit-stream POST returned HTTP %s", response.status_code)
             return False
         return True

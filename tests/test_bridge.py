@@ -181,10 +181,11 @@ def test_emit_audit_posts_when_url_set():
     posted = {}
 
     class FakeClient:
-        def post(self, url, json, headers, timeout):  # noqa: A002
+        def post(self, url, json, headers, timeout, follow_redirects):  # noqa: A002
             posted["url"] = url
             posted["json"] = json
             posted["headers"] = headers
+            posted["follow_redirects"] = follow_redirects
 
             class R:
                 status_code = 200
@@ -194,13 +195,14 @@ def test_emit_audit_posts_when_url_set():
     ok = emit_audit_event(
         decision,
         req,
-        audit_stream_url="http://localhost:8093",
+        audit_stream_url="http://127.0.0.1:8093",
         audit_stream_token="t" * 32,
         client=FakeClient(),
     )
     assert ok is True
-    assert posted["url"] == "http://localhost:8093/events"
+    assert posted["url"] == "http://127.0.0.1:8093/events"
     assert posted["headers"] == {"authorization": "Bearer " + "t" * 32}
+    assert posted["follow_redirects"] is False
     assert posted["json"]["kind"] == "tool_invocation_allowed"
     assert posted["json"]["source"] == "azure-openai-governance-bridge"
 
@@ -214,6 +216,7 @@ def test_audit_legacy_events_url_and_unauthorized_response(caplog):
         def post(self, url, **kwargs):
             seen["url"] = url
             seen["headers"] = kwargs["headers"]
+            seen["follow_redirects"] = kwargs["follow_redirects"]
 
             class Response:
                 status_code = 401
@@ -229,7 +232,32 @@ def test_audit_legacy_events_url_and_unauthorized_response(caplog):
     )
     assert seen["url"] == "https://audit.example/events"
     assert seen["headers"] == {"authorization": "Bearer " + "s" * 32}
+    assert seen["follow_redirects"] is False
     assert "s" * 32 not in caplog.text
+
+
+def test_audit_redirect_is_failed_delivery_without_following():
+    broker = make_broker()
+    decision, req = evaluate(broker, caller_id="app-1", deployment="gpt-4o", body={})
+    observed = {}
+
+    class RedirectClient:
+        def post(self, url, **kwargs):
+            observed["follow_redirects"] = kwargs["follow_redirects"]
+
+            class Response:
+                status_code = 302
+
+            return Response()
+
+    assert not emit_audit_event(
+        decision,
+        req,
+        audit_stream_url="https://audit.example",
+        audit_stream_token="s" * 32,
+        client=RedirectClient(),
+    )
+    assert observed["follow_redirects"] is False
 
 
 def test_audit_configured_without_token_does_not_post(caplog):
@@ -254,6 +282,7 @@ def test_audit_configured_without_token_does_not_post(caplog):
     "url",
     [
         "http://audit.example",
+        "http://localhost:8093",
         "https://user:password@audit.example",
         "https://audit.example?token=secret",
         "https://audit.example/#fragment",
