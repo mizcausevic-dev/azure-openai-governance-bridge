@@ -8,6 +8,8 @@
     "AZURE_OPENAI_API_VERSION": "2024-10-21",
     "AUDIT_STREAM_URL": "http://localhost:8093/events",
     "DEFAULT_OUTCOME": "deny",
+    "GOVERNANCE_CALLER_ID": "local-dev-workload",
+    "GOVERNANCE_ENVIRONMENT": "development",
     "POLICY_BUNDLES_JSON": "[]"
   }
 }

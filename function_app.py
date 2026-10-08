@@ -4,8 +4,8 @@ A client POSTs an Azure OpenAI chat-completion payload to
     POST /api/governed/{deployment}/chat/completions
 instead of calling Azure OpenAI directly. This function:
 
-  1. Identifies the caller (x-kg-caller-id header) and environment
-     (x-kg-environment header, default "production").
+  1. Reads the operator-configured caller and environment. Request headers
+     cannot claim a different caller or environment.
   2. Loads the active PolicyBundle(s) from the POLICY_BUNDLES_JSON app setting.
   3. Evaluates the deployment + every declared tool (deny-trumps-allow).
   4. allow      → forwards to AZURE_OPENAI_ENDPOINT, returns the response.
@@ -19,7 +19,9 @@ App settings (environment variables):
   AZURE_OPENAI_API_VERSION  default 2024-10-21
   POLICY_BUNDLES_JSON     JSON array of PolicyBundle objects
   AUDIT_STREAM_URL        optional; audit-stream-py /events endpoint
-  DEFAULT_OUTCOME         'deny' (default) or 'allow'
+  GOVERNANCE_CALLER_ID    required, one configured workload per Function app
+  GOVERNANCE_ENVIRONMENT  default production
+  DEFAULT_OUTCOME         must be 'deny'
 """
 
 from __future__ import annotations
@@ -27,6 +29,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 
 import azure.functions as func
 import httpx
@@ -34,7 +37,6 @@ import httpx
 from azure_openai_governance_bridge.audit import emit_audit_event
 from azure_openai_governance_bridge.bridge import evaluate
 from azure_openai_governance_bridge.broker import Broker
-from azure_openai_governance_bridge.models import Outcome
 
 logger = logging.getLogger("azure_openai_governance_bridge")
 
@@ -43,20 +45,39 @@ app = func.FunctionApp(http_auth_level=func.AuthLevel.FUNCTION)
 
 def _load_broker() -> Broker:
     raw = os.environ.get("POLICY_BUNDLES_JSON", "[]")
-    default_outcome: Outcome = "deny" if os.environ.get("DEFAULT_OUTCOME", "deny") == "deny" else "allow"
+    if os.environ.get("DEFAULT_OUTCOME", "deny") != "deny":
+        raise ValueError("DEFAULT_OUTCOME must be deny")
     try:
         bundles = json.loads(raw)
-    except json.JSONDecodeError:
-        logger.error("POLICY_BUNDLES_JSON is not valid JSON; defaulting to empty bundle set")
-        bundles = []
-    return Broker.from_dicts(bundles, default_outcome=default_outcome)
+    except json.JSONDecodeError as exc:
+        raise ValueError("POLICY_BUNDLES_JSON is not valid JSON") from exc
+    if not isinstance(bundles, list):
+        raise ValueError("POLICY_BUNDLES_JSON must be an array")
+    return Broker.from_dicts(bundles, default_outcome="deny")
+
+
+def _load_workload() -> tuple[str, str]:
+    caller_id = os.environ.get("GOVERNANCE_CALLER_ID", "")
+    environment = os.environ.get("GOVERNANCE_ENVIRONMENT", "production")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", caller_id):
+        raise ValueError("GOVERNANCE_CALLER_ID must be an ASCII identifier")
+    if environment not in {"production", "staging", "development"}:
+        raise ValueError("GOVERNANCE_ENVIRONMENT is invalid")
+    return caller_id, environment
+
+
+def _configuration_error() -> func.HttpResponse:
+    logger.error("governance bridge configuration invalid")
+    return func.HttpResponse(
+        json.dumps({"error": "governance_configuration_invalid"}),
+        status_code=503,
+        mimetype="application/json",
+    )
 
 
 @app.route(route="governed/{deployment}/chat/completions", methods=["POST"])
 def governed_chat_completions(req: func.HttpRequest) -> func.HttpResponse:
     deployment = req.route_params.get("deployment", "")
-    caller_id = req.headers.get("x-kg-caller-id", "anonymous")
-    environment = req.headers.get("x-kg-environment", "production")
 
     try:
         body = req.get_json()
@@ -67,10 +88,21 @@ def governed_chat_completions(req: func.HttpRequest) -> func.HttpResponse:
             mimetype="application/json",
         )
 
-    broker = _load_broker()
-    decision, perm_req = evaluate(
-        broker, caller_id=caller_id, deployment=deployment, body=body, environment=environment
-    )
+    try:
+        broker = _load_broker()
+        caller_id, environment = _load_workload()
+    except ValueError:
+        return _configuration_error()
+    try:
+        decision, perm_req = evaluate(
+            broker, caller_id=caller_id, deployment=deployment, body=body, environment=environment
+        )
+    except ValueError as exc:
+        return func.HttpResponse(
+            json.dumps({"error": "invalid_governed_request", "detail": str(exc)}),
+            status_code=400,
+            mimetype="application/json",
+        )
 
     emit_audit_event(decision, perm_req)
 
@@ -126,7 +158,7 @@ def governed_chat_completions(req: func.HttpRequest) -> func.HttpResponse:
             timeout=60.0,
         )
     except Exception as exc:  # noqa: BLE001
-        logger.error("upstream Azure OpenAI call failed: %s", exc)
+        logger.error("upstream Azure OpenAI call failed: %s", type(exc).__name__)
         return func.HttpResponse(
             json.dumps({"error": "upstream_unreachable", "correlation_id": decision.correlation_id}),
             status_code=502,
@@ -143,9 +175,13 @@ def governed_chat_completions(req: func.HttpRequest) -> func.HttpResponse:
 
 @app.route(route="healthz", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
 def healthz(req: func.HttpRequest) -> func.HttpResponse:
-    broker = _load_broker()
+    try:
+        _load_broker()
+        _load_workload()
+    except ValueError:
+        return _configuration_error()
     return func.HttpResponse(
-        json.dumps({"status": "ok", "bundles": broker.bundle_ids}),
+        json.dumps({"status": "ok"}),
         status_code=200,
         mimetype="application/json",
     )

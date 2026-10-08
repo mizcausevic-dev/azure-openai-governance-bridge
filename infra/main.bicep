@@ -26,9 +26,12 @@ param auditStreamUrl string = ''
 @description('JSON array of PolicyBundle objects.')
 param policyBundlesJson string = '[]'
 
-@description('Default outcome when no rule matches.')
-@allowed(['deny', 'allow'])
-param defaultOutcome string = 'deny'
+@description('Server-side identity for this single workload; give each workload its own Function app and key.')
+param governanceCallerId string
+
+@description('Server-side policy environment. Request headers cannot override this.')
+@allowed(['production', 'staging', 'development'])
+param governanceEnvironment string = 'production'
 
 var storageName = toLower(replace('${baseName}sa', '-', ''))
 var planName = '${baseName}-plan'
@@ -84,7 +87,9 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
         { name: 'AZURE_OPENAI_API_VERSION', value: '2024-10-21' }
         { name: 'AUDIT_STREAM_URL', value: auditStreamUrl }
         { name: 'POLICY_BUNDLES_JSON', value: policyBundlesJson }
-        { name: 'DEFAULT_OUTCOME', value: defaultOutcome }
+        { name: 'DEFAULT_OUTCOME', value: 'deny' }
+        { name: 'GOVERNANCE_CALLER_ID', value: governanceCallerId }
+        { name: 'GOVERNANCE_ENVIRONMENT', value: governanceEnvironment }
       ]
     }
   }

@@ -10,6 +10,7 @@ import logging
 import re
 from typing import Any
 
+from azure_openai_governance_bridge.conditions import matches_condition
 from azure_openai_governance_bridge.models import (
     Outcome,
     PermissionDecision,
@@ -70,12 +71,5 @@ class Broker:
         if not re.fullmatch(rule.caller_id, request.caller_id):
             return False
         if rule.when:
-            expr = rule.when.get("expr", "")
-            if not expr:
-                return True
-            try:
-                return bool(eval(expr, {"__builtins__": {}}, {"context": request.context}))
-            except Exception as exc:  # noqa: BLE001 — fail closed
-                logger.warning("when.expr failed for rule %s: %s", rule.id, exc)
-                return False
+            return matches_condition(rule.when["expr"], request.context)
         return True

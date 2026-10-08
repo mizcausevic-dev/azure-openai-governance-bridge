@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Any
 
 import httpx
@@ -64,7 +65,7 @@ def emit_audit_event(
             return False
         return True
     except Exception as exc:  # noqa: BLE001 — best-effort, never raised
-        logger.warning("audit-stream POST failed (best-effort, not raised): %s", exc)
+        logger.warning("audit-stream POST failed (best-effort, not raised): %s", type(exc).__name__)
         return False
 
 
@@ -74,12 +75,38 @@ def derive_tool_names(deployment: str, body: dict[str, Any]) -> list[str]:
     Always includes the deployment itself (`azure-openai.<deployment>`), plus
     one `tool.<name>` per function-calling tool declared in the request body.
     """
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", deployment):
+        raise ValueError("invalid deployment name")
+    if not isinstance(body, dict):
+        raise ValueError("request body must be a JSON object")
+    if "functions" in body or "function_call" in body:
+        raise ValueError("legacy function declarations are not supported")
     names = [f"azure-openai.{deployment}"]
-    tools = body.get("tools")
-    if isinstance(tools, list):
-        for tool in tools:
-            fn = tool.get("function") if isinstance(tool, dict) else None
-            name = fn.get("name") if isinstance(fn, dict) else None
-            if isinstance(name, str) and name:
-                names.append(f"tool.{name}")
+    tools = body.get("tools", [])
+    if not isinstance(tools, list):
+        raise ValueError("tools must be an array")
+    if len(tools) > 128:
+        raise ValueError("too many declared tools")
+    for tool in tools:
+        if not isinstance(tool, dict) or tool.get("type") != "function":
+            raise ValueError("each tool must declare a function")
+        fn = tool.get("function")
+        name = fn.get("name") if isinstance(fn, dict) else None
+        if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", name):
+            raise ValueError("each tool must have a valid function name")
+        names.append(f"tool.{name}")
+    tool_choice = body.get("tool_choice")
+    if isinstance(tool_choice, dict):
+        selected = tool_choice.get("function")
+        selected_name = selected.get("name") if isinstance(selected, dict) else None
+        if (
+            tool_choice.get("type") != "function"
+            or not isinstance(selected_name, str)
+            or f"tool.{selected_name}" not in names
+        ):
+            raise ValueError("tool_choice must name a declared function")
+    elif tool_choice is not None and (
+        not isinstance(tool_choice, str) or tool_choice not in {"none", "auto", "required"}
+    ):
+        raise ValueError("invalid tool_choice")
     return names

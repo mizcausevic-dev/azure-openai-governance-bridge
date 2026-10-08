@@ -1,12 +1,17 @@
-"""Pydantic models — deliberately identical in shape to mcp-permission-broker
-so a PolicyBundle authored for one enforces identically on the other."""
+"""Pydantic models for the bridge's restricted broker-style rule format.
+
+This is not the signed, typed-matcher PolicyBundle from policy-as-code-engine.
+"""
 
 from __future__ import annotations
 
+import re
 import uuid
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from azure_openai_governance_bridge.conditions import parse_condition
 
 Outcome = Literal["allow", "deny", "require_approval"]
 
@@ -41,6 +46,26 @@ class PolicyRule(BaseModel):
         default=None, description="Optional {'expr': <python expression over `context`>}."
     )
     because: _Because | None = None
+
+    @field_validator("tool_name", "caller_id")
+    @classmethod
+    def valid_pattern(cls, pattern: str) -> str:
+        if len(pattern) > 256:
+            raise ValueError("policy regex exceeds 256 characters")
+        try:
+            re.compile(pattern)
+        except re.error as exc:
+            raise ValueError("invalid policy regex") from exc
+        return pattern
+
+    @field_validator("when")
+    @classmethod
+    def valid_when(cls, value: dict[str, str] | None) -> dict[str, str] | None:
+        if value is not None:
+            if set(value) != {"expr"}:
+                raise ValueError("when must contain exactly one expr")
+            parse_condition(value["expr"])
+        return value
 
 
 class PolicyBundle(BaseModel):
