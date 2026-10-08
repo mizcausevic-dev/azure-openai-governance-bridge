@@ -36,7 +36,7 @@ For each request the bridge derives a list of `tool_name`s and checks every one 
 
 So a locally configured rule can restrict a deployment or declared function name before a single token is generated. The bridge checks declarations, not later execution of returned tool calls. It rejects malformed `tools`, undeclared `tool_choice`, and legacy `functions`/`function_call` fields rather than silently skipping them.
 
-The Function adapter rejects request bodies over 1 MiB with HTTP 413 before JSON parsing. The Functions host may still buffer a body before the adapter sees it; add an ingress limit at the deployed boundary. Evaluator faults return 503 without forwarding and emit a sanitized deny event when the audit sink is available. `/healthz` returns 503 when the signed card currently denies or evaluation fails.
+The Function adapter rejects request bodies over 1 MiB with HTTP 413 before JSON parsing. It returns 400 for malformed JSON, parser recursion errors, non-finite numbers, or nesting deeper than 64 levels, before policy evaluation or forwarding. The Functions host may still buffer a body before the adapter sees it; add an ingress limit at the deployed boundary. Evaluator faults return 503 without forwarding and emit a sanitized deny event when the audit sink is available. `/healthz` returns 503 when the signed card currently denies or evaluation fails.
 
 ## Rule grammar
 

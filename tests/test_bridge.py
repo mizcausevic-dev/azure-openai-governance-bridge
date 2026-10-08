@@ -13,7 +13,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from azure_openai_governance_bridge import Broker, PolicyBundle, PolicyRule
 from azure_openai_governance_bridge.audit import derive_tool_names, emit_audit_event
 from azure_openai_governance_bridge.bridge import evaluate
-from function_app import MAX_REQUEST_BYTES, governed_chat_completions, healthz
+from function_app import MAX_JSON_DEPTH, MAX_REQUEST_BYTES, governed_chat_completions, healthz
 
 _TEST_KEY = Ed25519PrivateKey.from_private_bytes(bytes([7] * 32))
 _KEY_URL = "https://buyer.example/.well-known/keys/decision-card"
@@ -381,6 +381,30 @@ def test_request_over_byte_limit_rejected_before_json_parse(monkeypatch):
     response = governed_chat_completions(request)
     assert response.status_code == 413
     assert json.loads(response.get_body()) == {"error": "request_too_large"}
+
+
+def test_parser_recursion_error_is_invalid_request_not_server_error(monkeypatch):
+    monkeypatch.setattr("function_app.httpx.post", lambda *a, **k: pytest.fail("upstream called"))
+    request = func.HttpRequest(
+        method="POST",
+        url="http://localhost/api/governed/gpt-4o/chat/completions",
+        body=b"[" * 2000 + b"0" + b"]" * 2000,
+        route_params={"deployment": "gpt-4o"},
+    )
+    assert governed_chat_completions(request).status_code == 400
+
+
+def test_parseable_deep_request_rejected_before_policy_or_upstream(monkeypatch):
+    monkeypatch.setattr("function_app.httpx.post", lambda *a, **k: pytest.fail("upstream called"))
+    nested = 0
+    for _ in range(MAX_JSON_DEPTH + 1):
+        nested = [nested]
+    assert governed_chat_completions(_request({"messages": nested})).status_code == 400
+
+
+def test_nonfinite_request_value_rejected_before_upstream(monkeypatch):
+    monkeypatch.setattr("function_app.httpx.post", lambda *a, **k: pytest.fail("upstream called"))
+    assert governed_chat_completions(_request({"messages": [float("inf")]})).status_code == 400
 
 
 def test_invalid_config_denies_without_upstream_call(monkeypatch):

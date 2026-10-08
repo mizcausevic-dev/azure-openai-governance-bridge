@@ -33,8 +33,10 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
+from collections.abc import Iterator
 
 import azure.functions as func
 import httpx
@@ -47,6 +49,7 @@ from azure_openai_governance_bridge.signed_card import SignedCardGate, load_sign
 
 logger = logging.getLogger("azure_openai_governance_bridge")
 MAX_REQUEST_BYTES = 1_048_576
+MAX_JSON_DEPTH = 64
 
 app = func.FunctionApp(http_auth_level=func.AuthLevel.FUNCTION)
 
@@ -133,6 +136,26 @@ def _configuration_error() -> func.HttpResponse:
     )
 
 
+def _validate_request_json(value: object) -> None:
+    """Bound nested JSON without recursion before policy checks or forwarding."""
+    stack: list[tuple[Iterator[object], int]] = [(iter((value,)), 0)]
+    while stack:
+        values, depth = stack[-1]
+        try:
+            node = next(values)
+        except StopIteration:
+            stack.pop()
+            continue
+        if depth > MAX_JSON_DEPTH:
+            raise ValueError("request JSON is too deeply nested")
+        if isinstance(node, dict):
+            stack.append((iter(node.values()), depth + 1))
+        elif isinstance(node, list):
+            stack.append((iter(node), depth + 1))
+        elif isinstance(node, float) and not math.isfinite(node):
+            raise ValueError("request JSON contains a non-finite number")
+
+
 @app.route(route="governed/{deployment}/chat/completions", methods=["POST"])
 def governed_chat_completions(req: func.HttpRequest) -> func.HttpResponse:
     deployment = req.route_params.get("deployment", "")
@@ -146,7 +169,8 @@ def governed_chat_completions(req: func.HttpRequest) -> func.HttpResponse:
 
     try:
         body = req.get_json()
-    except ValueError:
+        _validate_request_json(body)
+    except (ValueError, RecursionError):
         return func.HttpResponse(
             json.dumps({"error": "request body must be valid JSON"}),
             status_code=400,
