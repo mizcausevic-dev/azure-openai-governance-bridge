@@ -30,6 +30,8 @@ class Broker:
         self._default_outcome: Outcome = default_outcome
 
     def add_bundle(self, bundle: PolicyBundle) -> None:
+        if bundle.bundle_id in self._bundles:
+            raise ValueError("duplicate policy bundle ID")
         self._bundles[bundle.bundle_id] = bundle
 
     @classmethod

@@ -27,6 +27,26 @@ _EVENT_KIND: dict[Outcome, str] = {
 _SOURCE = "azure-openai-governance-bridge"
 
 
+def _audit_events_url(raw_url: str) -> str:
+    try:
+        url = httpx.URL(raw_url)
+    except httpx.InvalidURL:
+        raise ValueError("invalid audit stream URL") from None
+    if (
+        url.scheme not in {"http", "https"}
+        or not url.host
+        or url.userinfo
+        or url.query
+        or url.fragment
+        or (url.scheme == "http" and url.host not in {"localhost", "127.0.0.1", "::1"})
+    ):
+        raise ValueError("audit stream URL must be HTTPS or loopback HTTP without credentials")
+    path = url.path.rstrip("/")
+    if not path.endswith("/events"):
+        path += "/events"
+    return str(url.copy_with(path=path))
+
+
 def emit_audit_event(
     decision: PermissionDecision,
     request: PermissionRequest,
@@ -46,9 +66,11 @@ def emit_audit_event(
     if len(token) < 32 or any(ord(char) < 33 or ord(char) > 126 for char in token):
         logger.warning("audit-stream token is unavailable or invalid")
         return False
-    url = url.rstrip("/")
-    if not url.endswith("/events"):
-        url += "/events"
+    try:
+        url = _audit_events_url(url)
+    except ValueError:
+        logger.warning("audit-stream URL is invalid")
+        return False
 
     event = {
         "kind": _EVENT_KIND[decision.outcome],

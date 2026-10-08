@@ -15,7 +15,7 @@ The bridge derives the `policy-as-code-engine` `policies[]` bundle from the sign
 - **deny** → `403` with the matched rule and any configured Decision Card URL; nothing is forwarded
 - **require_approval** → `409`; no approval-token verification exists yet, so an operator must update policy through a separate trusted process before the call can proceed
 
-The bridge attempts one authenticated `tool_invocation_*` POST to [`audit-stream-py`](https://github.com/mizcausevic-dev/audit-stream-py) for the governing decision when both audit URL and token are configured. Audit is optional and best-effort: missing or failed delivery does not block forwarding. This is not durable, per-tool, tamper-evident audit evidence.
+The bridge attempts one authenticated `tool_invocation_*` POST to [`audit-stream-py`](https://github.com/mizcausevic-dev/audit-stream-py) for the governing decision when both audit URL and token are configured. The sink URL must use HTTPS or loopback HTTP, without embedded credentials, query, or fragment. Audit is optional and best-effort: missing or failed delivery does not block forwarding. This is not durable, per-tool, tamper-evident audit evidence.
 
 **Release status:** this repository is a local integration prototype. Do not put it on a production data path until the identity, bundle provenance, audit, network, secrets, deployment, and rollback gates below are closed.
 
@@ -79,10 +79,10 @@ func azure functionapp publish <functionAppName>
 
 | Setting | Required | Purpose |
 | --- | --- | --- |
-| `AZURE_OPENAI_ENDPOINT` | yes | Upstream Azure OpenAI resource |
+| `AZURE_OPENAI_ENDPOINT` | yes | HTTPS root URL on `<resource>.openai.azure.com`; no userinfo, nonstandard port, path, query, or fragment; Private Endpoint DNS can resolve that hostname privately |
 | `AZURE_OPENAI_API_KEY` | yes | Upstream key; current template uses a direct app setting and is not production-ready |
-| `AZURE_OPENAI_API_VERSION` | no (`2024-10-21`) | API version forwarded upstream |
-| `POLICY_BUNDLES_JSON` | yes for an allow | JSON array of bridge `rules[]` bundles; empty or unmatched rules default deny |
+| `AZURE_OPENAI_API_VERSION` | no (`2024-10-21`) | Date or date-preview version only; malformed values return 503 |
+| `POLICY_BUNDLES_JSON` | yes for an allow | JSON array of bridge `rules[]` bundles; empty or unmatched rules default deny; duplicate keys, IDs, and non-finite numbers return 503 |
 | `GOVERNANCE_DECISION_CARD_JSON` | yes | JSON `{ "card": ..., "attestation": ... }`; max 128 KiB, duplicate keys and non-finite numbers rejected; missing/invalid config returns 503 |
 | `GOVERNANCE_BUYER_ID` | yes | Buyer ID independently pinned by the operator |
 | `GOVERNANCE_BUYER_KEY_URL` | yes | Independently pinned HTTPS key URL, compared with signed attestation |
@@ -93,6 +93,8 @@ func azure functionapp publish <functionAppName>
 | `GOVERNANCE_CALLER_ID` | yes | Server-side identity for this one workload; absent returns 503; this is not caller authentication |
 | `GOVERNANCE_ENVIRONMENT` | no (`production`) | Server-side production, staging, or development |
 | `DEFAULT_OUTCOME` | no (`deny`) | Must be `deny`; any other value returns 503 |
+
+Endpoint validation currently supports the Azure public-cloud `<resource>.openai.azure.com` hostname only. Private DNS may resolve that hostname to a private address. Sovereign-cloud and custom Azure OpenAI domains need a separately reviewed allowlist change before use.
 
 ## Local development
 

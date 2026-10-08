@@ -59,6 +59,8 @@ def _configure_card(monkeypatch, card=None):
 @pytest.fixture(autouse=True)
 def signed_card_environment(monkeypatch):
     _configure_card(monkeypatch)
+    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://fixture.openai.azure.com")
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "fixture-key")
 
 
 BUNDLE = {
@@ -248,6 +250,35 @@ def test_audit_configured_without_token_does_not_post(caplog):
     assert "audit-stream token is unavailable" in caplog.text
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://audit.example",
+        "https://user:password@audit.example",
+        "https://audit.example?token=secret",
+        "https://audit.example/#fragment",
+    ],
+)
+def test_audit_rejects_insecure_or_credentialed_url_without_sending_token(url, caplog):
+    broker = make_broker()
+    decision, req = evaluate(broker, caller_id="app-1", deployment="gpt-4o", body={})
+
+    class UnexpectedClient:
+        def post(self, *args, **kwargs):
+            pytest.fail("audit POST attempted to unsafe URL")
+
+    assert not emit_audit_event(
+        decision,
+        req,
+        audit_stream_url=url,
+        audit_stream_token="s" * 32,
+        client=UnexpectedClient(),
+    )
+    assert "s" * 32 not in caplog.text
+    assert "password" not in caplog.text
+    assert "secret" not in caplog.text
+
+
 def test_when_expr_cannot_use_builtins():
     from pydantic import ValidationError
 
@@ -316,6 +347,60 @@ def test_invalid_config_denies_without_upstream_call(monkeypatch):
     monkeypatch.setattr("function_app.httpx.post", lambda *a, **k: pytest.fail("upstream called"))
     assert governed_chat_completions(_request({"messages": []})).status_code == 503
     assert healthz(_request({})).status_code == 503
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        '[{"bundle_id":"b","rules":[],"rules":[]}]',
+        '[{"bundle_id":"b","rules":[],"x":NaN}]',
+        '[{"bundle_id":"b","rules":[]},{"bundle_id":"b","rules":[]}]',
+    ],
+)
+def test_ambiguous_bridge_rules_fail_closed(monkeypatch, raw):
+    monkeypatch.setenv("GOVERNANCE_CALLER_ID", "app-1")
+    monkeypatch.setenv("POLICY_BUNDLES_JSON", raw)
+    monkeypatch.setattr("function_app.httpx.post", lambda *a, **k: pytest.fail("upstream called"))
+    assert governed_chat_completions(_request({"messages": []})).status_code == 503
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "http://fixture.openai.azure.com",
+        "https://user:password@fixture.openai.azure.com",
+        "https://fixture.openai.azure.com?token=secret",
+        "https://fixture.openai.azure.com/#fragment",
+        "https://fixture.openai.azure.com/openai",
+        "https://fixture.openai.azure.com:444",
+        "https://evil.example",
+    ],
+)
+def test_unsafe_upstream_endpoint_fails_before_forwarding(monkeypatch, endpoint, caplog):
+    monkeypatch.setenv("GOVERNANCE_CALLER_ID", "app-1")
+    monkeypatch.setenv("POLICY_BUNDLES_JSON", json.dumps([BUNDLE]))
+    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", endpoint)
+    monkeypatch.setattr("function_app.httpx.post", lambda *a, **k: pytest.fail("upstream called"))
+    assert governed_chat_completions(_request({"messages": []})).status_code == 503
+    assert healthz(_request({})).status_code == 503
+    assert "password" not in caplog.text
+    assert "secret" not in caplog.text
+
+
+def test_unsafe_api_version_fails_before_forwarding(monkeypatch):
+    monkeypatch.setenv("GOVERNANCE_CALLER_ID", "app-1")
+    monkeypatch.setenv("POLICY_BUNDLES_JSON", json.dumps([BUNDLE]))
+    monkeypatch.setenv("AZURE_OPENAI_API_VERSION", "2024-10-21&extra=1")
+    monkeypatch.setattr("function_app.httpx.post", lambda *a, **k: pytest.fail("upstream called"))
+    assert governed_chat_completions(_request({"messages": []})).status_code == 503
+
+
+def test_missing_upstream_key_fails_before_forwarding(monkeypatch):
+    monkeypatch.setenv("GOVERNANCE_CALLER_ID", "app-1")
+    monkeypatch.setenv("POLICY_BUNDLES_JSON", json.dumps([BUNDLE]))
+    monkeypatch.delenv("AZURE_OPENAI_API_KEY")
+    monkeypatch.setattr("function_app.httpx.post", lambda *a, **k: pytest.fail("upstream called"))
+    assert governed_chat_completions(_request({"messages": []})).status_code == 503
 
 
 def test_default_allow_config_denies_without_upstream_call(monkeypatch):

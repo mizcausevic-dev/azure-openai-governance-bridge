@@ -54,13 +54,28 @@ def _load_broker() -> Broker:
     raw = os.environ.get("POLICY_BUNDLES_JSON", "[]")
     if os.environ.get("DEFAULT_OUTCOME", "deny") != "deny":
         raise ValueError("DEFAULT_OUTCOME must be deny")
+    if len(raw.encode("utf-8")) > 131_072:
+        raise ValueError("POLICY_BUNDLES_JSON exceeds size limit")
     try:
-        bundles = json.loads(raw)
+        bundles = json.loads(raw, object_pairs_hook=_unique_object, parse_constant=_invalid_constant)
     except json.JSONDecodeError as exc:
         raise ValueError("POLICY_BUNDLES_JSON is not valid JSON") from exc
     if not isinstance(bundles, list):
         raise ValueError("POLICY_BUNDLES_JSON must be an array")
     return Broker.from_dicts(bundles, default_outcome="deny")
+
+
+def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("policy configuration contains a duplicate key")
+        result[key] = value
+    return result
+
+
+def _invalid_constant(_value: str) -> None:
+    raise ValueError("policy configuration contains a non-finite number")
 
 
 def _load_workload() -> tuple[str, str]:
@@ -81,6 +96,31 @@ def _load_signed_card() -> SignedCardGate:
         buyer_public_key_b64=os.environ.get("GOVERNANCE_BUYER_PUBLIC_KEY_B64", ""),
         vendor_id=os.environ.get("GOVERNANCE_VENDOR_ID", ""),
     )
+
+
+def _load_upstream() -> tuple[str, str, str]:
+    raw_endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT", "")
+    api_key = os.environ.get("AZURE_OPENAI_API_KEY", "")
+    api_version = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-10-21")
+    try:
+        endpoint = httpx.URL(raw_endpoint)
+    except httpx.InvalidURL as exc:
+        raise ValueError("invalid Azure OpenAI endpoint") from exc
+    if (
+        raw_endpoint != raw_endpoint.strip()
+        or endpoint.scheme != "https"
+        or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,62}\.openai\.azure\.com", endpoint.host or "")
+        or endpoint.port not in (None, 443)
+        or endpoint.userinfo
+        or endpoint.query
+        or endpoint.fragment
+        or endpoint.path not in ("", "/")
+        or not api_key
+        or any(ord(char) < 33 or ord(char) > 126 for char in api_key)
+        or not re.fullmatch(r"20\d{2}-\d{2}-\d{2}(?:-preview)?", api_version)
+    ):
+        raise ValueError("invalid Azure OpenAI upstream configuration")
+    return str(endpoint.copy_with(path="/")).rstrip("/"), api_key, api_version
 
 
 def _configuration_error() -> func.HttpResponse:
@@ -109,6 +149,7 @@ def governed_chat_completions(req: func.HttpRequest) -> func.HttpResponse:
         broker = _load_broker()
         caller_id, environment = _load_workload()
         signed_card = _load_signed_card()
+        endpoint, api_key, api_version = _load_upstream()
     except ValueError:
         return _configuration_error()
     try:
@@ -162,19 +203,6 @@ def governed_chat_completions(req: func.HttpRequest) -> func.HttpResponse:
         )
 
     # Allowed — forward to Azure OpenAI.
-    endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT", "").rstrip("/")
-    api_key = os.environ.get("AZURE_OPENAI_API_KEY", "")
-    api_version = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-10-21")
-
-    if not endpoint or not api_key:
-        return func.HttpResponse(
-            json.dumps(
-                {"error": "bridge_misconfigured", "detail": "AZURE_OPENAI_ENDPOINT / API_KEY not set"}
-            ),
-            status_code=500,
-            mimetype="application/json",
-        )
-
     upstream = f"{endpoint}/openai/deployments/{deployment}/chat/completions?api-version={api_version}"
     try:
         resp = httpx.post(
@@ -205,6 +233,7 @@ def healthz(req: func.HttpRequest) -> func.HttpResponse:
         _load_broker()
         _load_workload()
         _load_signed_card()
+        _load_upstream()
     except ValueError:
         return _configuration_error()
     return func.HttpResponse(

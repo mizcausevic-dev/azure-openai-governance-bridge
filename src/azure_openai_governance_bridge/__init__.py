@@ -1,8 +1,9 @@
-"""Experimental Azure OpenAI proxy using local broker-style rules.
+"""Experimental Azure OpenAI proxy with separate signed-card and tool-rule gates.
 
 The rule shape resembles mcp-permission-broker but uses a restricted condition
-grammar. It cannot load policy-as-code-engine bundles or verify a signed buyer
-Decision Card. Audit event delivery is optional and best-effort.
+grammar. The Azure adapter verifies a pinned buyer Decision Card before
+deriving a policy-as-code-engine bundle; bare bundles are not trusted input.
+Audit event delivery is optional and best-effort.
 
 Public surface:
     from azure_openai_governance_bridge import (
