@@ -5,10 +5,10 @@ This is not the signed, typed-matcher PolicyBundle from policy-as-code-engine.
 
 from __future__ import annotations
 
-import re
 import uuid
 from typing import Any, Literal
 
+import regex
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from azure_openai_governance_bridge.conditions import parse_condition
@@ -53,8 +53,8 @@ class PolicyRule(BaseModel):
         if len(pattern) > 256:
             raise ValueError("policy regex exceeds 256 characters")
         try:
-            re.compile(pattern)
-        except re.error as exc:
+            regex.compile(pattern)
+        except regex.error as exc:
             raise ValueError("invalid policy regex") from exc
         return pattern
 

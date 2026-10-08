@@ -6,8 +6,9 @@ instead of calling Azure OpenAI directly. This function:
 
   1. Reads the operator-configured caller and environment. Request headers
      cannot claim a different caller or environment.
-  2. Loads the active PolicyBundle(s) from the POLICY_BUNDLES_JSON app setting.
-  3. Evaluates the deployment + every declared tool (deny-trumps-allow).
+  2. Verifies an operator-pinned buyer Decision Card and derives its scoped
+     policy-as-code-engine bundle; loads the separate per-tool rule set.
+  3. Requires both the signed-card gate and every per-tool check to allow.
   4. allow      → forwards to AZURE_OPENAI_ENDPOINT, returns the response.
      deny        → 403 with the rationale; nothing forwarded.
      require_approval → 409 with the rationale (caller must obtain approval).
@@ -17,8 +18,12 @@ App settings (environment variables):
   AZURE_OPENAI_ENDPOINT   e.g. https://my-aoai.openai.azure.com
   AZURE_OPENAI_API_KEY    key for the upstream resource
   AZURE_OPENAI_API_VERSION  default 2024-10-21
-  POLICY_BUNDLES_JSON     JSON array of PolicyBundle objects
-  AUDIT_STREAM_URL        optional; audit-stream-py /events endpoint
+  POLICY_BUNDLES_JSON     JSON array of bridge rules[] bundles
+  GOVERNANCE_DECISION_CARD_JSON  signed card+attestation envelope
+  GOVERNANCE_BUYER_ID, GOVERNANCE_BUYER_KEY_URL,
+  GOVERNANCE_BUYER_PUBLIC_KEY_B64, GOVERNANCE_VENDOR_ID  operator pins
+  AUDIT_STREAM_URL        optional; audit-stream-py base URL or /events endpoint
+  AUDIT_STREAM_TOKEN      bearer token required when audit URL is set
   GOVERNANCE_CALLER_ID    required, one configured workload per Function app
   GOVERNANCE_ENVIRONMENT  default production
   DEFAULT_OUTCOME         must be 'deny'
@@ -37,6 +42,8 @@ import httpx
 from azure_openai_governance_bridge.audit import emit_audit_event
 from azure_openai_governance_bridge.bridge import evaluate
 from azure_openai_governance_bridge.broker import Broker
+from azure_openai_governance_bridge.models import PermissionDecision
+from azure_openai_governance_bridge.signed_card import SignedCardGate, load_signed_card_gate
 
 logger = logging.getLogger("azure_openai_governance_bridge")
 
@@ -66,6 +73,16 @@ def _load_workload() -> tuple[str, str]:
     return caller_id, environment
 
 
+def _load_signed_card() -> SignedCardGate:
+    return load_signed_card_gate(
+        os.environ.get("GOVERNANCE_DECISION_CARD_JSON", ""),
+        buyer_id=os.environ.get("GOVERNANCE_BUYER_ID", ""),
+        buyer_key_url=os.environ.get("GOVERNANCE_BUYER_KEY_URL", ""),
+        buyer_public_key_b64=os.environ.get("GOVERNANCE_BUYER_PUBLIC_KEY_B64", ""),
+        vendor_id=os.environ.get("GOVERNANCE_VENDOR_ID", ""),
+    )
+
+
 def _configuration_error() -> func.HttpResponse:
     logger.error("governance bridge configuration invalid")
     return func.HttpResponse(
@@ -91,6 +108,7 @@ def governed_chat_completions(req: func.HttpRequest) -> func.HttpResponse:
     try:
         broker = _load_broker()
         caller_id, environment = _load_workload()
+        signed_card = _load_signed_card()
     except ValueError:
         return _configuration_error()
     try:
@@ -102,6 +120,14 @@ def governed_chat_completions(req: func.HttpRequest) -> func.HttpResponse:
             json.dumps({"error": "invalid_governed_request", "detail": str(exc)}),
             status_code=400,
             mimetype="application/json",
+        )
+
+    card_result = signed_card.evaluate()
+    if card_result.decision.kind != "allow":
+        decision = PermissionDecision(
+            outcome="deny",
+            matched_rules=["decision-card-gate"],
+            rationale="Decision Card policy denied this request",
         )
 
     emit_audit_event(decision, perm_req)
@@ -178,6 +204,7 @@ def healthz(req: func.HttpRequest) -> func.HttpResponse:
     try:
         _load_broker()
         _load_workload()
+        _load_signed_card()
     except ValueError:
         return _configuration_error()
     return func.HttpResponse(

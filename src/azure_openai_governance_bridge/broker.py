@@ -7,8 +7,9 @@ Azure Function cold start.
 from __future__ import annotations
 
 import logging
-import re
 from typing import Any
+
+import regex
 
 from azure_openai_governance_bridge.conditions import matches_condition
 from azure_openai_governance_bridge.models import (
@@ -66,10 +67,13 @@ class Broker:
         )
 
     def _matches(self, rule: Any, request: PermissionRequest) -> bool:
-        if not re.fullmatch(rule.tool_name, request.tool_name):
-            return False
-        if not re.fullmatch(rule.caller_id, request.caller_id):
-            return False
+        try:
+            if not regex.fullmatch(rule.tool_name, request.tool_name, timeout=0.02):
+                return False
+            if not regex.fullmatch(rule.caller_id, request.caller_id, timeout=0.02):
+                return False
+        except TimeoutError as exc:
+            raise ValueError("policy regex timed out") from exc
         if rule.when:
             return matches_condition(rule.when["expr"], request.context)
         return True

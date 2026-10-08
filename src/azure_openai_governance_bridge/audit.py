@@ -1,7 +1,8 @@
 """Best-effort audit-stream-py emitter — same contract as every Suite producer.
 
-If AUDIT_STREAM_URL is unset, this is a no-op. A failed POST is logged and
-swallowed; it never raises back into the request path.
+If AUDIT_STREAM_URL is unset, this is a no-op. A configured endpoint requires
+the audit-stream-py bearer token. A failed POST is logged and swallowed; it
+never raises back into the request path.
 """
 
 from __future__ import annotations
@@ -31,6 +32,7 @@ def emit_audit_event(
     request: PermissionRequest,
     *,
     audit_stream_url: str | None = None,
+    audit_stream_token: str | None = None,
     client: httpx.Client | None = None,
 ) -> bool:
     """POST one governance event to audit-stream-py. Returns True if POSTed, False if skipped/failed.
@@ -40,6 +42,13 @@ def emit_audit_event(
     url = audit_stream_url if audit_stream_url is not None else os.environ.get("AUDIT_STREAM_URL", "")
     if not url:
         return False
+    token = audit_stream_token if audit_stream_token is not None else os.environ.get("AUDIT_STREAM_TOKEN", "")
+    if len(token) < 32 or any(ord(char) < 33 or ord(char) > 126 for char in token):
+        logger.warning("audit-stream token is unavailable or invalid")
+        return False
+    url = url.rstrip("/")
+    if not url.endswith("/events"):
+        url += "/events"
 
     event = {
         "kind": _EVENT_KIND[decision.outcome],
@@ -57,9 +66,9 @@ def emit_audit_event(
 
     try:
         if client is not None:
-            response = client.post(url, json=event, timeout=2.0)
+            response = client.post(url, json=event, headers={"authorization": f"Bearer {token}"}, timeout=2.0)
         else:
-            response = httpx.post(url, json=event, timeout=2.0)
+            response = httpx.post(url, json=event, headers={"authorization": f"Bearer {token}"}, timeout=2.0)
         if response.status_code >= 400:
             logger.warning("audit-stream POST returned HTTP %s", response.status_code)
             return False

@@ -1,14 +1,65 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
+from datetime import UTC, datetime
 
 import azure.functions as func
 import pytest
+import rfc8785
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from azure_openai_governance_bridge import Broker, PolicyBundle, PolicyRule
 from azure_openai_governance_bridge.audit import derive_tool_names, emit_audit_event
 from azure_openai_governance_bridge.bridge import evaluate
 from function_app import governed_chat_completions, healthz
+
+_TEST_KEY = Ed25519PrivateKey.from_private_bytes(bytes([7] * 32))
+_KEY_URL = "https://buyer.example/.well-known/keys/decision-card"
+
+
+def _card(**overrides):
+    card = {
+        "decision_card_version": "0.1",
+        "decision_id": "TEST-001",
+        "issued_at": "2026-05-14T19:00:00Z",
+        "buyer": {"id": "buyer-1", "name": "Test Buyer", "type": "school-district"},
+        "decision": {"status": "approved", "effective_until": "2999-01-01T00:00:00Z"},
+        "subject": {"vendor_name": "Test Vendor", "vendor_id": "vendor-1"},
+        "rationale": "Synthetic test approval.",
+    }
+    card.update(overrides)
+    return card
+
+
+def _signed_envelope(card):
+    fields = {
+        "algorithm": "ed25519",
+        "hash_profile": "jcs-rfc8785-v1",
+        "signed_hash": "sha256:" + hashlib.sha256(rfc8785.dumps(card)).hexdigest(),
+        "key_url": _KEY_URL,
+        "signed_at": datetime.now(UTC).isoformat(timespec="seconds"),
+    }
+    signature = _TEST_KEY.sign(b"hash-attestation/v2\x00" + rfc8785.dumps(fields))
+    return {"card": card, "attestation": {**fields, "signature": base64.b64encode(signature).decode()}}
+
+
+def _configure_card(monkeypatch, card=None):
+    monkeypatch.setenv("GOVERNANCE_DECISION_CARD_JSON", json.dumps(_signed_envelope(card or _card())))
+    monkeypatch.setenv("GOVERNANCE_BUYER_ID", "buyer-1")
+    monkeypatch.setenv("GOVERNANCE_BUYER_KEY_URL", _KEY_URL)
+    monkeypatch.setenv(
+        "GOVERNANCE_BUYER_PUBLIC_KEY_B64",
+        base64.b64encode(_TEST_KEY.public_key().public_bytes_raw()).decode(),
+    )
+    monkeypatch.setenv("GOVERNANCE_VENDOR_ID", "vendor-1")
+
+
+@pytest.fixture(autouse=True)
+def signed_card_environment(monkeypatch):
+    _configure_card(monkeypatch)
+
 
 BUNDLE = {
     "bundle_id": "acme-aoai-2026",
@@ -128,20 +179,73 @@ def test_emit_audit_posts_when_url_set():
     posted = {}
 
     class FakeClient:
-        def post(self, url, json, timeout):  # noqa: A002
+        def post(self, url, json, headers, timeout):  # noqa: A002
             posted["url"] = url
             posted["json"] = json
+            posted["headers"] = headers
 
             class R:
                 status_code = 200
 
             return R()
 
-    ok = emit_audit_event(decision, req, audit_stream_url="http://localhost:8093/events", client=FakeClient())
+    ok = emit_audit_event(
+        decision,
+        req,
+        audit_stream_url="http://localhost:8093",
+        audit_stream_token="t" * 32,
+        client=FakeClient(),
+    )
     assert ok is True
     assert posted["url"] == "http://localhost:8093/events"
+    assert posted["headers"] == {"authorization": "Bearer " + "t" * 32}
     assert posted["json"]["kind"] == "tool_invocation_allowed"
     assert posted["json"]["source"] == "azure-openai-governance-bridge"
+
+
+def test_audit_legacy_events_url_and_unauthorized_response(caplog):
+    broker = make_broker()
+    decision, req = evaluate(broker, caller_id="app-1", deployment="gpt-4o", body={})
+    seen = {}
+
+    class UnauthorizedClient:
+        def post(self, url, **kwargs):
+            seen["url"] = url
+            seen["headers"] = kwargs["headers"]
+
+            class Response:
+                status_code = 401
+
+            return Response()
+
+    assert not emit_audit_event(
+        decision,
+        req,
+        audit_stream_url="https://audit.example/events",
+        audit_stream_token="s" * 32,
+        client=UnauthorizedClient(),
+    )
+    assert seen["url"] == "https://audit.example/events"
+    assert seen["headers"] == {"authorization": "Bearer " + "s" * 32}
+    assert "s" * 32 not in caplog.text
+
+
+def test_audit_configured_without_token_does_not_post(caplog):
+    broker = make_broker()
+    decision, req = evaluate(broker, caller_id="app-1", deployment="gpt-4o", body={})
+
+    class UnexpectedClient:
+        def post(self, *args, **kwargs):
+            pytest.fail("audit POST attempted without token")
+
+    assert not emit_audit_event(
+        decision,
+        req,
+        audit_stream_url="https://audit.example",
+        audit_stream_token="",
+        client=UnexpectedClient(),
+    )
+    assert "audit-stream token is unavailable" in caplog.text
 
 
 def test_when_expr_cannot_use_builtins():
@@ -263,6 +367,18 @@ def test_invalid_rules_stop_bridge_before_upstream(monkeypatch, invalid_rules):
     assert governed_chat_completions(_request({"messages": []})).status_code == 503
 
 
+def test_policy_regex_timeout_fails_closed_without_upstream(monkeypatch):
+    monkeypatch.setenv("GOVERNANCE_CALLER_ID", "app-1")
+    monkeypatch.setenv("POLICY_BUNDLES_JSON", json.dumps([BUNDLE]))
+
+    def time_out(*args, **kwargs):
+        raise TimeoutError
+
+    monkeypatch.setattr("azure_openai_governance_bridge.broker.regex.fullmatch", time_out)
+    monkeypatch.setattr("function_app.httpx.post", lambda *a, **k: pytest.fail("upstream called"))
+    assert governed_chat_completions(_request({"messages": []})).status_code == 400
+
+
 def test_valid_allow_forwards_with_server_identity(monkeypatch):
     monkeypatch.setenv("GOVERNANCE_CALLER_ID", "app-1")
     monkeypatch.setenv("GOVERNANCE_ENVIRONMENT", "production")
@@ -302,6 +418,79 @@ def test_healthz_does_not_disclose_bundle_ids(monkeypatch):
     assert response.get_body() == b'{"status": "ok"}'
 
 
+def test_missing_signed_card_fails_closed_without_upstream(monkeypatch):
+    monkeypatch.setenv("GOVERNANCE_CALLER_ID", "app-1")
+    monkeypatch.setenv("POLICY_BUNDLES_JSON", json.dumps([BUNDLE]))
+    monkeypatch.delenv("GOVERNANCE_DECISION_CARD_JSON")
+    monkeypatch.setattr("function_app.httpx.post", lambda *a, **k: pytest.fail("upstream called"))
+    assert governed_chat_completions(_request({"messages": []})).status_code == 503
+    assert healthz(_request({})).status_code == 503
+
+
+def test_tampered_card_or_wrong_buyer_pin_fails_closed(monkeypatch):
+    monkeypatch.setenv("GOVERNANCE_CALLER_ID", "app-1")
+    monkeypatch.setenv("POLICY_BUNDLES_JSON", json.dumps([BUNDLE]))
+    envelope = _signed_envelope(_card())
+    envelope["card"]["subject"]["vendor_name"] = "Changed after signing"
+    monkeypatch.setenv("GOVERNANCE_DECISION_CARD_JSON", json.dumps(envelope))
+    monkeypatch.setattr("function_app.httpx.post", lambda *a, **k: pytest.fail("upstream called"))
+    assert governed_chat_completions(_request({"messages": []})).status_code == 503
+    _configure_card(monkeypatch)
+    monkeypatch.setenv("GOVERNANCE_BUYER_ID", "wrong-buyer")
+    assert governed_chat_completions(_request({"messages": []})).status_code == 503
+
+
+@pytest.mark.parametrize("raw", ['{"card": {}, "card": {}}', '{"card": NaN, "attestation": {}}'])
+def test_ambiguous_signed_card_json_fails_closed(monkeypatch, raw):
+    monkeypatch.setenv("GOVERNANCE_CALLER_ID", "app-1")
+    monkeypatch.setenv("POLICY_BUNDLES_JSON", json.dumps([BUNDLE]))
+    monkeypatch.setenv("GOVERNANCE_DECISION_CARD_JSON", raw)
+    monkeypatch.setattr("function_app.httpx.post", lambda *a, **k: pytest.fail("upstream called"))
+    assert governed_chat_completions(_request({"messages": []})).status_code == 503
+
+
+def test_expired_signed_card_denies_without_upstream(monkeypatch):
+    monkeypatch.setenv("GOVERNANCE_CALLER_ID", "app-1")
+    monkeypatch.setenv("POLICY_BUNDLES_JSON", json.dumps([BUNDLE]))
+    _configure_card(
+        monkeypatch,
+        _card(decision={"status": "approved", "effective_until": "2026-01-01T00:00:00Z"}),
+    )
+    monkeypatch.setattr("function_app.httpx.post", lambda *a, **k: pytest.fail("upstream called"))
+    response = governed_chat_completions(_request({"messages": []}))
+    assert response.status_code == 403
+    assert json.loads(response.get_body())["matched_rules"] == ["decision-card-gate"]
+
+
+def test_conditional_card_ignores_request_assertions_and_denies(monkeypatch):
+    monkeypatch.setenv("GOVERNANCE_CALLER_ID", "app-1")
+    monkeypatch.setenv("POLICY_BUNDLES_JSON", json.dumps([BUNDLE]))
+    _configure_card(
+        monkeypatch,
+        _card(
+            decision={"status": "approved-with-conditions", "effective_until": "2999-01-01T00:00:00Z"},
+            conditions=[{"id": "dpa-signed", "description": "DPA is signed"}],
+        ),
+    )
+    monkeypatch.setattr("function_app.httpx.post", lambda *a, **k: pytest.fail("upstream called"))
+    response = governed_chat_completions(
+        _request(
+            {"messages": [], "conditions_satisfied": {"dpa-signed": True}},
+            headers={"x-kg-vendor-id": "vendor-1", "x-kg-condition-dpa-signed": "true"},
+        )
+    )
+    assert response.status_code == 403
+
+
+def test_forged_vendor_header_cannot_change_server_scope(monkeypatch):
+    monkeypatch.setenv("GOVERNANCE_CALLER_ID", "app-1")
+    monkeypatch.setenv("POLICY_BUNDLES_JSON", json.dumps([BUNDLE]))
+    monkeypatch.setenv("GOVERNANCE_VENDOR_ID", "another-vendor")
+    monkeypatch.setattr("function_app.httpx.post", lambda *a, **k: pytest.fail("upstream called"))
+    response = governed_chat_completions(_request({"messages": []}, headers={"x-kg-vendor-id": "vendor-1"}))
+    assert response.status_code == 503
+
+
 def test_policy_engine_bundle_contract_is_refused(monkeypatch):
     monkeypatch.setenv("GOVERNANCE_CALLER_ID", "app-1")
     monkeypatch.setenv(
@@ -329,7 +518,11 @@ def test_audit_failure_log_omits_exception_detail(caplog):
 
     assert (
         emit_audit_event(
-            decision, perm_req, audit_stream_url="https://audit.example/events", client=FailedClient()
+            decision,
+            perm_req,
+            audit_stream_url="https://audit.example/events",
+            audit_stream_token="t" * 32,
+            client=FailedClient(),
         )
         is False
     )
