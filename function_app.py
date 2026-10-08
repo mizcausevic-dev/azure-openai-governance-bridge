@@ -46,6 +46,7 @@ from azure_openai_governance_bridge.models import PermissionDecision
 from azure_openai_governance_bridge.signed_card import SignedCardGate, load_signed_card_gate
 
 logger = logging.getLogger("azure_openai_governance_bridge")
+MAX_REQUEST_BYTES = 1_048_576
 
 app = func.FunctionApp(http_auth_level=func.AuthLevel.FUNCTION)
 
@@ -136,6 +137,13 @@ def _configuration_error() -> func.HttpResponse:
 def governed_chat_completions(req: func.HttpRequest) -> func.HttpResponse:
     deployment = req.route_params.get("deployment", "")
 
+    if len(req.get_body()) > MAX_REQUEST_BYTES:
+        return func.HttpResponse(
+            json.dumps({"error": "request_too_large"}),
+            status_code=413,
+            mimetype="application/json",
+        )
+
     try:
         body = req.get_json()
     except ValueError:
@@ -163,7 +171,26 @@ def governed_chat_completions(req: func.HttpRequest) -> func.HttpResponse:
             mimetype="application/json",
         )
 
-    card_result = signed_card.evaluate()
+    try:
+        card_result = signed_card.evaluate()
+    except Exception:  # noqa: BLE001 - evaluator faults must not reach the upstream
+        logger.error("Decision Card evaluation failed")
+        failure = PermissionDecision(
+            outcome="deny",
+            matched_rules=["decision-card-evaluation-error"],
+            rationale="Decision Card evaluation unavailable",
+        )
+        try:
+            emit_audit_event(failure, perm_req)
+        except Exception:  # noqa: BLE001 - the audit path must not mask the policy failure
+            logger.warning("audit emission failed")
+        return func.HttpResponse(
+            json.dumps(
+                {"error": "governance_evaluation_unavailable", "correlation_id": failure.correlation_id}
+            ),
+            status_code=503,
+            mimetype="application/json",
+        )
     if card_result.decision.kind != "allow":
         decision = PermissionDecision(
             outcome="deny",
@@ -232,10 +259,21 @@ def healthz(req: func.HttpRequest) -> func.HttpResponse:
     try:
         _load_broker()
         _load_workload()
-        _load_signed_card()
+        signed_card = _load_signed_card()
         _load_upstream()
     except ValueError:
         return _configuration_error()
+    try:
+        card_result = signed_card.evaluate()
+    except Exception:  # noqa: BLE001 - readiness fails closed on evaluator faults
+        logger.error("Decision Card evaluation failed")
+        return func.HttpResponse(
+            json.dumps({"status": "unavailable"}), status_code=503, mimetype="application/json"
+        )
+    if card_result.decision.kind != "allow":
+        return func.HttpResponse(
+            json.dumps({"status": "policy_denied"}), status_code=503, mimetype="application/json"
+        )
     return func.HttpResponse(
         json.dumps({"status": "ok"}),
         status_code=200,

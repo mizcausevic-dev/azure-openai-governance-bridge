@@ -13,7 +13,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from azure_openai_governance_bridge import Broker, PolicyBundle, PolicyRule
 from azure_openai_governance_bridge.audit import derive_tool_names, emit_audit_event
 from azure_openai_governance_bridge.bridge import evaluate
-from function_app import governed_chat_completions, healthz
+from function_app import MAX_REQUEST_BYTES, governed_chat_completions, healthz
 
 _TEST_KEY = Ed25519PrivateKey.from_private_bytes(bytes([7] * 32))
 _KEY_URL = "https://buyer.example/.well-known/keys/decision-card"
@@ -341,6 +341,19 @@ def _request(body, *, headers=None):
     )
 
 
+def test_request_over_byte_limit_rejected_before_json_parse(monkeypatch):
+    monkeypatch.setattr("function_app.httpx.post", lambda *a, **k: pytest.fail("upstream called"))
+    request = func.HttpRequest(
+        method="POST",
+        url="http://localhost/api/governed/gpt-4o/chat/completions",
+        body=b"x" * (MAX_REQUEST_BYTES + 1),
+        route_params={"deployment": "gpt-4o"},
+    )
+    response = governed_chat_completions(request)
+    assert response.status_code == 413
+    assert json.loads(response.get_body()) == {"error": "request_too_large"}
+
+
 def test_invalid_config_denies_without_upstream_call(monkeypatch):
     monkeypatch.setenv("GOVERNANCE_CALLER_ID", "app-1")
     monkeypatch.setenv("POLICY_BUNDLES_JSON", "not json")
@@ -545,6 +558,50 @@ def test_expired_signed_card_denies_without_upstream(monkeypatch):
     response = governed_chat_completions(_request({"messages": []}))
     assert response.status_code == 403
     assert json.loads(response.get_body())["matched_rules"] == ["decision-card-gate"]
+    assert healthz(_request({})).status_code == 503
+
+
+def test_evaluator_fault_denies_with_sanitized_audit_and_health(monkeypatch, caplog):
+    monkeypatch.setenv("GOVERNANCE_CALLER_ID", "app-1")
+    monkeypatch.setenv("POLICY_BUNDLES_JSON", json.dumps([BUNDLE]))
+    monkeypatch.setattr("function_app.httpx.post", lambda *a, **k: pytest.fail("upstream called"))
+    observed = {}
+
+    def fail_evaluation(self):
+        raise RuntimeError("fixture-secret")
+
+    def capture_audit(decision, request):
+        observed["decision"] = decision
+        observed["request"] = request
+        return True
+
+    monkeypatch.setattr("azure_openai_governance_bridge.signed_card.SignedCardGate.evaluate", fail_evaluation)
+    monkeypatch.setattr("function_app.emit_audit_event", capture_audit)
+    response = governed_chat_completions(_request({"messages": []}))
+    assert response.status_code == 503
+    assert json.loads(response.get_body())["error"] == "governance_evaluation_unavailable"
+    assert observed["decision"].outcome == "deny"
+    assert observed["decision"].matched_rules == ["decision-card-evaluation-error"]
+    assert observed["request"].tool_name == "azure-openai.gpt-4o"
+    assert healthz(_request({})).status_code == 503
+    assert "fixture-secret" not in caplog.text
+    assert b"fixture-secret" not in response.get_body()
+
+
+def test_evaluator_fault_still_returns_503_if_audit_emitter_fails(monkeypatch, caplog):
+    monkeypatch.setenv("GOVERNANCE_CALLER_ID", "app-1")
+    monkeypatch.setenv("POLICY_BUNDLES_JSON", json.dumps([BUNDLE]))
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("fixture-secret")
+
+    monkeypatch.setattr("azure_openai_governance_bridge.signed_card.SignedCardGate.evaluate", fail)
+    monkeypatch.setattr("function_app.emit_audit_event", fail)
+    monkeypatch.setattr("function_app.httpx.post", lambda *a, **k: pytest.fail("upstream called"))
+    response = governed_chat_completions(_request({"messages": []}))
+    assert response.status_code == 503
+    assert "fixture-secret" not in caplog.text
+    assert b"fixture-secret" not in response.get_body()
 
 
 def test_conditional_card_ignores_request_assertions_and_denies(monkeypatch):
