@@ -119,8 +119,8 @@ The core (broker, bridge orchestration, audit emitter) is pure Python and fully 
 | --- | --- |
 | MCP-shaped sibling gate | [`mcp-permission-broker`](https://github.com/mizcausevic-dev/mcp-permission-broker) |
 | Future bundle adapter | [`policy-as-code-engine`](https://github.com/mizcausevic-dev/policy-as-code-engine) (current `policies[]` output is incompatible with this bridge's `rules[]` input) |
-| The spec being enforced | [`ai-procurement-decision-spec`](https://github.com/mizcausevic-dev/ai-procurement-decision-spec) |
-| The tamper-evident spine | [`audit-stream-py`](https://github.com/mizcausevic-dev/audit-stream-py) |
+| Future signed-card input | [`ai-procurement-decision-spec`](https://github.com/mizcausevic-dev/ai-procurement-decision-spec) (not yet verified or enforced here) |
+| Optional best-effort event target | [`audit-stream-py`](https://github.com/mizcausevic-dev/audit-stream-py) (delivery and durability not verified) |
 
 ## Status
 
