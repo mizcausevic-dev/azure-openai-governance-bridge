@@ -1,8 +1,9 @@
-"""azure-openai-governance-bridge — gate Azure OpenAI calls at the edge.
+"""Experimental Azure OpenAI proxy with separate signed-card and tool-rule gates.
 
-The Azure-native sibling of mcp-permission-broker: same deny-trumps-allow
-PolicyBundle contract, applied to Azure OpenAI requests, emitting the same
-tool_invocation_* events to the audit-stream-py spine.
+The rule shape resembles mcp-permission-broker but uses a restricted condition
+grammar. The Azure adapter verifies a pinned buyer Decision Card before
+deriving a policy-as-code-engine bundle; bare bundles are not trusted input.
+Audit event delivery is optional and best-effort.
 
 Public surface:
     from azure_openai_governance_bridge import (

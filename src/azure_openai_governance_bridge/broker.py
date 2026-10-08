@@ -7,9 +7,11 @@ Azure Function cold start.
 from __future__ import annotations
 
 import logging
-import re
 from typing import Any
 
+import regex
+
+from azure_openai_governance_bridge.conditions import matches_condition
 from azure_openai_governance_bridge.models import (
     Outcome,
     PermissionDecision,
@@ -28,6 +30,8 @@ class Broker:
         self._default_outcome: Outcome = default_outcome
 
     def add_bundle(self, bundle: PolicyBundle) -> None:
+        if bundle.bundle_id in self._bundles:
+            raise ValueError("duplicate policy bundle ID")
         self._bundles[bundle.bundle_id] = bundle
 
     @classmethod
@@ -65,17 +69,13 @@ class Broker:
         )
 
     def _matches(self, rule: Any, request: PermissionRequest) -> bool:
-        if not re.fullmatch(rule.tool_name, request.tool_name):
-            return False
-        if not re.fullmatch(rule.caller_id, request.caller_id):
-            return False
-        if rule.when:
-            expr = rule.when.get("expr", "")
-            if not expr:
-                return True
-            try:
-                return bool(eval(expr, {"__builtins__": {}}, {"context": request.context}))
-            except Exception as exc:  # noqa: BLE001 — fail closed
-                logger.warning("when.expr failed for rule %s: %s", rule.id, exc)
+        try:
+            if not regex.fullmatch(rule.tool_name, request.tool_name, timeout=0.02):
                 return False
+            if not regex.fullmatch(rule.caller_id, request.caller_id, timeout=0.02):
+                return False
+        except TimeoutError as exc:
+            raise ValueError("policy regex timed out") from exc
+        if rule.when:
+            return matches_condition(rule.when["expr"], request.context)
         return True

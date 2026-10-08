@@ -6,8 +6,16 @@
     "AZURE_OPENAI_ENDPOINT": "https://your-aoai.openai.azure.com",
     "AZURE_OPENAI_API_KEY": "<your-key>",
     "AZURE_OPENAI_API_VERSION": "2024-10-21",
-    "AUDIT_STREAM_URL": "http://localhost:8093/events",
+    "AUDIT_STREAM_URL": "",
+    "AUDIT_STREAM_TOKEN": "",
     "DEFAULT_OUTCOME": "deny",
+    "GOVERNANCE_CALLER_ID": "local-dev-workload",
+    "GOVERNANCE_ENVIRONMENT": "development",
+    "GOVERNANCE_DECISION_CARD_JSON": "",
+    "GOVERNANCE_BUYER_ID": "",
+    "GOVERNANCE_BUYER_KEY_URL": "",
+    "GOVERNANCE_BUYER_PUBLIC_KEY_B64": "",
+    "GOVERNANCE_VENDOR_ID": "",
     "POLICY_BUNDLES_JSON": "[]"
   }
 }

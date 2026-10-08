@@ -20,15 +20,38 @@ param aoaiEndpoint string
 @secure()
 param aoaiApiKey string
 
-@description('Optional audit-stream-py /events endpoint.')
+@description('Optional audit-stream-py base URL or /events endpoint.')
 param auditStreamUrl string = ''
 
-@description('JSON array of PolicyBundle objects.')
+@description('Audit stream bearer token. Required by the producer when auditStreamUrl is set.')
+@secure()
+param auditStreamToken string = ''
+
+@description('JSON array of bridge rules[] bundles; separate from the signed Decision Card gate.')
 param policyBundlesJson string = '[]'
 
-@description('Default outcome when no rule matches.')
-@allowed(['deny', 'allow'])
-param defaultOutcome string = 'deny'
+@description('Signed Decision Card and attestation JSON envelope; load from an operator-controlled secret source.')
+@secure()
+param governanceDecisionCardJson string
+
+@description('Independently pinned buyer ID for the signed Decision Card.')
+param governanceBuyerId string
+
+@description('Independently pinned HTTPS buyer key URL for the signed Decision Card.')
+param governanceBuyerKeyUrl string
+
+@description('Independently pinned base64 Ed25519 buyer public key.')
+param governanceBuyerPublicKeyB64 string
+
+@description('Operator-fixed vendor ID for this one workload.')
+param governanceVendorId string
+
+@description('Server-side identity for this single workload; give each workload its own Function app and key.')
+param governanceCallerId string
+
+@description('Server-side policy environment. Request headers cannot override this.')
+@allowed(['production', 'staging', 'development'])
+param governanceEnvironment string = 'production'
 
 var storageName = toLower(replace('${baseName}sa', '-', ''))
 var planName = '${baseName}-plan'
@@ -83,8 +106,16 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
         { name: 'AZURE_OPENAI_API_KEY', value: aoaiApiKey }
         { name: 'AZURE_OPENAI_API_VERSION', value: '2024-10-21' }
         { name: 'AUDIT_STREAM_URL', value: auditStreamUrl }
+        { name: 'AUDIT_STREAM_TOKEN', value: auditStreamToken }
         { name: 'POLICY_BUNDLES_JSON', value: policyBundlesJson }
-        { name: 'DEFAULT_OUTCOME', value: defaultOutcome }
+        { name: 'GOVERNANCE_DECISION_CARD_JSON', value: governanceDecisionCardJson }
+        { name: 'GOVERNANCE_BUYER_ID', value: governanceBuyerId }
+        { name: 'GOVERNANCE_BUYER_KEY_URL', value: governanceBuyerKeyUrl }
+        { name: 'GOVERNANCE_BUYER_PUBLIC_KEY_B64', value: governanceBuyerPublicKeyB64 }
+        { name: 'GOVERNANCE_VENDOR_ID', value: governanceVendorId }
+        { name: 'DEFAULT_OUTCOME', value: 'deny' }
+        { name: 'GOVERNANCE_CALLER_ID', value: governanceCallerId }
+        { name: 'GOVERNANCE_ENVIRONMENT', value: governanceEnvironment }
       ]
     }
   }
